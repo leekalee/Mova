@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MovaApp());
@@ -38,10 +40,61 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int selectedTab = 0;
+  @override
+  void initState() {
+    super.initState();
+    _loadFavorites();
+  }
+  Future<void> _loadFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final savedFavorites =
+        prefs.getStringList('favorite_buses') ?? [];
+
+    final savedName =
+        prefs.getString('user_name') ?? 'Пользователь MOVA';
+
+    final savedPhone =
+        prefs.getString('user_phone') ?? '';
+
+    final savedNotifications =
+        prefs.getBool('notifications_enabled') ?? true;
+
+    if (!mounted) return;
+
+    setState(() {
+      favoriteBusNumbers = savedFavorites.toSet();
+      userName = savedName;
+      userPhone = savedPhone;
+      notificationsEnabled = savedNotifications;
+    });
+  }
+
+  Future<void> _saveFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setStringList(
+      'favorite_buses',
+      favoriteBusNumbers.toList(),
+    );
+
+    await prefs.setString('user_name', userName);
+    await prefs.setString('user_phone', userPhone);
+
+    await prefs.setBool(
+      'notifications_enabled',
+      notificationsEnabled,
+    );
+  }
   String search = '';
   String fromLocation = '';
   String toLocation = '';
   bool routeSearched = false;
+  List<Map<String, dynamic>> suitableBuses = [];
+  Set<String> favoriteBusNumbers = {};
+  String userName = 'Пользователь MOVA';
+  String userPhone = '';
+  bool notificationsEnabled = true;
 
   final List<Map<String, dynamic>> buses = [
     {
@@ -134,7 +187,52 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const Spacer(),
               IconButton(
-                onPressed: () {},
+                onPressed: () {
+                  showDialog(
+                    context: context,
+                    builder: (context) {
+                      return AlertDialog(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        title: const Text(
+                          'Уведомления',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        content: const Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.notifications_none_rounded,
+                              size: 55,
+                              color: green,
+                            ),
+                            SizedBox(height: 15),
+                            Text(
+                              'У вас пока нет уведомлений',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 15,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () {
+                              Navigator.pop(context);
+                            },
+                            child: const Text(
+                              'Закрыть',
+                              style: TextStyle(color: green),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  );
+                },
                 icon: const Icon(
                   Icons.notifications_none_rounded,
                   color: Colors.white,
@@ -142,37 +240,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'Привет! Куда направляемся?',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 13),
-          TextField(
-            onChanged: (value) {
-              setState(() => search = value);
-            },
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Найти остановку или маршрут',
-              hintStyle: const TextStyle(color: Colors.white54),
-              prefixIcon: const Icon(
-                Icons.search,
-                color: green,
-              ),
-              filled: true,
-              fillColor: const Color(0xFF24334A),
-              contentPadding: const EdgeInsets.symmetric(vertical: 13),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(14),
-                borderSide: BorderSide.none,
-              ),
-            ),
           ),
         ],
       ),
@@ -536,6 +603,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildBusCard(Map<String, dynamic> bus) {
     final Color color = bus['color'];
+    final String busNumber = bus['number'].toString();
+    final bool isFavorite = favoriteBusNumbers.contains(busNumber);
 
     return InkWell(
       onTap: () {
@@ -609,6 +678,26 @@ class _HomeScreenState extends State<HomeScreen> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
+                IconButton(
+                  onPressed: () {
+                    setState(() {
+                      if (isFavorite) {
+                        favoriteBusNumbers.remove(busNumber);
+                      } else {
+                        favoriteBusNumbers.add(busNumber);
+                      }
+                    });
+
+                    _saveFavorites();
+                  },
+                  icon: Icon(
+                    isFavorite ? Icons.favorite : Icons.favorite_border,
+                    color: isFavorite ? Colors.red : Colors.grey,
+                  ),
+                  tooltip: isFavorite
+                      ? 'Убрать из избранного'
+                      : 'Добавить в избранное',
+                ),
                 Text(
                   bus['time'],
                   style: const TextStyle(
@@ -699,11 +788,31 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
       // Записываем координаты в поле "Откуда"
-      setState(() {
-        fromLocation =
-            'Моё местоположение (${position.latitude.toStringAsFixed(5)}, '
-            '${position.longitude.toStringAsFixed(5)})';
+      List<Placemark> placemarks = await placemarkFromCoordinates(
+        position.latitude,
+        position.longitude,
+      );
 
+      String address = 'Моё местоположение';
+
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+
+        address = [
+          place.street,
+          place.subLocality,
+          place.locality,
+        ].where((item) => item != null && item.isNotEmpty).join(', ');
+
+        if (address.isEmpty) {
+          address = 'Моё местоположение';
+        }
+      }
+
+      if (!mounted) return;
+
+      setState(() {
+        fromLocation = address;
         routeSearched = false;
       });
 
@@ -721,7 +830,141 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _editProfile() async {
+    final nameController = TextEditingController(text: userName);
+    final phoneController = TextEditingController(text: userPhone);
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Редактировать профиль'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Ваше имя',
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+              ),
+              const SizedBox(height: 15),
+              TextField(
+                controller: phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                  labelText: 'Номер телефона',
+                  prefixIcon: Icon(Icons.phone_outlined),
+                  hintText: '+996',
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Отмена'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (result == true) {
+      final newName = nameController.text.trim();
+      final newPhone = phoneController.text.trim();
+
+      if (newName.isNotEmpty) {
+        setState(() {
+          userName = newName;
+          userPhone = newPhone;
+        });
+
+        await _saveFavorites();
+      }
+    }
+
+    nameController.dispose();
+    phoneController.dispose();
+  }
+
   Widget _buildOtherPage() {
+    if (selectedTab == 3) {
+      final favoriteBuses = buses.where((bus) {
+        return favoriteBusNumbers.contains(
+          bus['number'].toString(),
+        );
+      }).toList();
+
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Избранное',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.bold,
+                color: navy,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Ваши любимые маршруты',
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 20),
+
+            if (favoriteBuses.isEmpty)
+              const Expanded(
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.favorite_border,
+                        size: 65,
+                        color: Colors.grey,
+                      ),
+                      SizedBox(height: 12),
+                      Text(
+                        'Здесь пока ничего нет',
+                        style: TextStyle(
+                          color: Colors.grey,
+                          fontSize: 16,
+                        ),
+                      ),
+                      SizedBox(height: 5),
+                      Text(
+                        'Нажмите на сердечко у автобуса',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              Expanded(
+                child: ListView(
+                  children: favoriteBuses.map((bus) {
+                    return _buildBusCard(bus);
+                  }).toList(),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
     if (selectedTab == 1) {
       return Padding(
         padding: const EdgeInsets.all(16),
@@ -850,6 +1093,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   }
 
                   setState(() {
+                    final to = toLocation.toLowerCase().trim();
+
+                    suitableBuses = buses.where((bus) {
+                      final route =
+                      bus['destination'].toString().toLowerCase();
+
+                      return route.contains(to);
+                    }).toList();
+
                     routeSearched = true;
                   });
                 },
@@ -882,8 +1134,15 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: ListView(
-                  children: buses.map((bus) {
+                child: suitableBuses.isEmpty
+                    ? const Center(
+                  child: Text(
+                    'Подходящие маршруты не найдены',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+                    : ListView(
+                  children: suitableBuses.map((bus) {
                     return _buildBusCard(bus);
                   }).toList(),
                 ),
@@ -909,6 +1168,169 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+          ],
+        ),
+      );
+    }
+
+    if (selectedTab == 4) {
+      return Padding(
+        padding: const EdgeInsets.all(20),
+        child: ListView(
+          children: [
+            const Text(
+              'Мой профиль',
+              style: TextStyle(
+                fontSize: 26,
+                fontWeight: FontWeight.bold,
+                color: navy,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Управляйте своими данными и настройками',
+              style: TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 25),
+
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Личные данные',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  const Text('Имя', style: TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 6),
+                  Text(
+                    userName,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  const Text(
+                    'Номер телефона',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    userPhone.isEmpty ? 'Не указан' : userPhone,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: _editProfile,
+                      icon: const Icon(Icons.edit),
+                      label: const Text('Редактировать данные'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.all(14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 18),
+
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Настройки',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Уведомления'),
+                    subtitle: const Text(
+                      'Получать уведомления приложения',
+                    ),
+                    activeColor: green,
+                    value: notificationsEnabled,
+                    onChanged: (value) {
+                      setState(() {
+                        notificationsEnabled = value;
+                      });
+                      _saveFavorites();
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 18),
+
+            Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'О приложении',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  SizedBox(height: 15),
+                  Text(
+                    'MOVA',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: green,
+                    ),
+                  ),
+                  SizedBox(height: 5),
+                  Text(
+                    'Умный помощник для поездок по городу',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    'Версия 1.0.0',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       );
