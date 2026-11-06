@@ -233,6 +233,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
                   );
                 },
+
                 icon: const Icon(
                   Icons.notifications_none_rounded,
                   color: Colors.white,
