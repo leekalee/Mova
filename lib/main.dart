@@ -291,6 +291,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+
           const SizedBox(height: 15),
           _buildMap(),
           const SizedBox(height: 22),
